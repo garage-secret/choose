@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#16142b">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>Doigt au hasard</title>
+<style>
+  :root {
+    --bg: #16142b;
+    --ink: #f4f1ff;
+    --muted: #9c97c4;
+    --panel: #25224a;
+    --accent: #ffb000;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; height: 100%; overflow: hidden;
+    background: var(--bg); color: var(--ink);
+    font-family: ui-rounded, "SF Pro Rounded", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+    overscroll-behavior: none;
+  }
+  #stage {
+    position: fixed; inset: 0;
+    touch-action: none;
+    transition: background-color .5s ease;
+  }
+  #status {
+    position: absolute; left: 0; right: 0;
+    top: calc(env(safe-area-inset-top, 0px) + 28px);
+    text-align: center; padding: 0 24px;
+    font-size: 1.25rem; font-weight: 700; line-height: 1.3;
+    pointer-events: none;
+  }
+  #status small { display: block; margin-top: 6px; font-size: .95rem; font-weight: 500; color: var(--muted); }
+  #count {
+    position: absolute; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 9rem; font-weight: 800; opacity: 0;
+    pointer-events: none; color: rgba(255,255,255,.12);
+  }
+  #count.on { opacity: 1; }
+
+  .f { position: absolute; left: 0; top: 0; width: 0; height: 0; pointer-events: none; }
+  .dot {
+    position: absolute; left: -54px; top: -54px; width: 108px; height: 108px;
+    border-radius: 50%;
+    display: grid; place-items: center;
+    font-size: 2.6rem; font-weight: 800; color: rgba(0,0,0,.65);
+    animation: pop .25s ease-out;
+    transition: transform .6s cubic-bezier(.2,.8,.2,1), opacity .5s ease;
+  }
+  .dot::after {
+    content: ""; position: absolute; inset: -14px; border-radius: 50%;
+    border: 4px solid currentColor; opacity: .5; color: inherit;
+  }
+  .counting .dot::after { animation: ring 1s ease-in-out infinite; }
+  .dot.win { transform: scale(1.3); z-index: 1; box-shadow: 0 0 0 7px #fff; }
+  .dot.win::after { display: none; }
+  .dot.lose { transform: scale(.3); opacity: 0; }
+  .dot.final { transform: scale(1.25); }
+  @keyframes pop { from { transform: scale(.2); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  @keyframes ring { 0%,100% { transform: scale(1); opacity: .5; } 50% { transform: scale(1.18); opacity: .15; } }
+
+  #bar {
+    position: absolute; left: 0; right: 0;
+    bottom: calc(env(safe-area-inset-bottom, 0px) + 20px);
+    display: flex; flex-direction: column; align-items: center; gap: 12px;
+    transition: opacity .25s ease;
+  }
+  #bar.hide { opacity: 0; pointer-events: none; }
+  .seg { display: flex; background: var(--panel); border-radius: 999px; padding: 4px; }
+  .seg button, .step button {
+    font: inherit; font-weight: 700; color: var(--muted);
+    background: none; border: 0; padding: 12px 18px; border-radius: 999px; cursor: pointer;
+  }
+  .seg button[aria-pressed="true"] { background: var(--ink); color: var(--bg); }
+  .step { display: none; align-items: center; gap: 4px; background: var(--panel); border-radius: 999px; padding: 4px; }
+  .step.show { display: flex; }
+  .step button { width: 44px; padding: 12px 0; color: var(--ink); font-size: 1.2rem; }
+  .step span { min-width: 108px; text-align: center; font-weight: 700; }
+  button:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  @media (prefers-reduced-motion: reduce) {
+    .dot, .dot::after, #stage { animation: none !important; transition: none !important; }
+  }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div id="status"></div>
+  <div id="count"></div>
+  <div id="bar">
+    <div class="step" id="step">
+      <button id="minus" aria-label="Moins d'équipes">−</button>
+      <span id="teamLabel">2 équipes</span>
+      <button id="plus" aria-label="Plus d'équipes">+</button>
+    </div>
+    <div class="seg" id="modes">
+      <button data-mode="one" aria-pressed="true">Un doigt</button>
+      <button data-mode="teams" aria-pressed="false">Équipes</button>
+      <button data-mode="order" aria-pressed="false">Ordre</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const stage = document.getElementById('stage');
+  const statusEl = document.getElementById('status');
+  const countEl = document.getElementById('count');
+  const bar = document.getElementById('bar');
+  const step = document.getElementById('step');
+  const teamLabel = document.getElementById('teamLabel');
+
+  const FINGER_COLORS = ['#ff5d73', '#ffb000', '#2ee6a6', '#4cc9f0', '#b388ff', '#ff8fd8', '#c6f432', '#ff7a3d', '#7aa2ff', '#f2f2f2'];
+  const TEAM_COLORS = ['#ff5d73', '#4cc9f0', '#ffb000', '#2ee6a6', '#b388ff'];
+  const TEAM_NAMES = ['A', 'B', 'C', 'D', 'E'];
+  const COUNTDOWN = 3;
+
+  let mode = 'one';
+  let teamCount = 2;
+  let phase = 'idle'; // idle | counting | done
+  let timer = null;
+  let colorIndex = 0;
+  const fingers = new Map(); // pointerId -> { el, dot, x, y, color }
+  const down = new Set();
+
+  const need = () => (mode === 'teams' ? teamCount : 2);
+
+  function setStatus(title, sub) {
+    statusEl.innerHTML = title + (sub ? '<small>' + sub + '</small>' : '');
+  }
+
+  function idleHint() {
+    if (fingers.size === 0) {
+      const hints = {
+        one: 'Posez chacun un doigt sur l\u2019écran',
+        teams: 'Posez chacun un doigt pour former ' + teamCount + ' équipes',
+        order: 'Posez chacun un doigt pour tirer l\u2019ordre'
+      };
+      setStatus(hints[mode]);
+    } else {
+      const missing = need() - fingers.size;
+      setStatus('Il manque ' + missing + ' doigt' + (missing > 1 ? 's' : ''));
+    }
+  }
+
+  function shuffle(arr) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [a[i], a[j]] = [a[j], a[i]];
+    }
+    return a;
+  }
+
+  function placeFinger(f) {
+    f.el.style.transform = 'translate(' + f.x + 'px,' + f.y + 'px)';
+  }
+
+  function addFinger(e) {
+    const color = FINGER_COLORS[colorIndex++ % FINGER_COLORS.length];
+    const el = document.createElement('div');
+    el.className = 'f';
+    const dot = document.createElement('div');
+    dot.className = 'dot';
+    dot.style.background = color;
+    dot.style.color = color;
+    el.appendChild(dot);
+    stage.appendChild(el);
+    const f = { el, dot, x: e.clientX, y: e.clientY, color };
+    fingers.set(e.pointerId, f);
+    placeFinger(f);
+  }
+
+  function restart() {
+    clearTimeout(timer);
+    stage.classList.remove('counting');
+    countEl.classList.remove('on');
+    phase = 'idle';
+    if (fingers.size < need()) { idleHint(); return; }
+    phase = 'counting';
+    stage.classList.add('counting');
+    let n = COUNTDOWN;
+    const tick = () => {
+      if (n === 0) { resolve(); return; }
+      countEl.textContent = n;
+      countEl.classList.add('on');
+      setStatus('Ne bougez plus\u2026');
+      if (navigator.vibrate) navigator.vibrate(15);
+      n--;
+      timer = setTimeout(tick, 1000);
+    };
+    tick();
+  }
+
+  function resolve() {
+    phase = 'done';
+    stage.classList.remove('counting');
+    countEl.classList.remove('on');
+    const ids = shuffle([...fingers.keys()]);
+
+    if (mode === 'one') {
+      const winner = fingers.get(ids[0]);
+      ids.forEach((id, i) => fingers.get(id).dot.classList.add(i === 0 ? 'win' : 'lose'));
+      stage.style.backgroundColor = winner.color;
+      setStatus('C\u2019est toi !', 'Levez les doigts pour rejouer');
+      statusEl.style.color = '#16142b';
+    } else if (mode === 'teams') {
+      ids.forEach((id, i) => {
+        const f = fingers.get(id);
+        const t = i % teamCount;
+        f.dot.style.background = TEAM_COLORS[t];
+        f.dot.style.color = TEAM_COLORS[t];
+        f.dot.textContent = TEAM_NAMES[t];
+        f.dot.classList.add('final');
+      });
+      setStatus('Équipes formées', 'Levez les doigts pour rejouer');
+    } else {
+      ids.forEach((id, i) => {
+        const f = fingers.get(id);
+        f.dot.textContent = i + 1;
+        f.dot.classList.add('final');
+      });
+      setStatus('Ordre de passage', 'Levez les doigts pour rejouer');
+    }
+    if (navigator.vibrate) navigator.vibrate([40, 60, 120]);
+  }
+
+  function resetAll() {
+    clearTimeout(timer);
+    fingers.forEach(f => f.el.remove());
+    fingers.clear();
+    down.clear();
+    colorIndex = 0;
+    phase = 'idle';
+    stage.style.backgroundColor = '';
+    statusEl.style.color = '';
+    stage.classList.remove('counting');
+    countEl.classList.remove('on');
+    bar.classList.remove('hide');
+    idleHint();
+  }
+
+  stage.addEventListener('pointerdown', e => {
+    if (e.target.closest('#bar')) return;
+    if (phase === 'done') return;
+    e.preventDefault();
+    down.add(e.pointerId);
+    addFinger(e);
+    bar.classList.add('hide');
+    restart();
+  });
+
+  stage.addEventListener('pointermove', e => {
+    const f = fingers.get(e.pointerId);
+    if (!f || phase === 'done') return;
+    f.x = e.clientX; f.y = e.clientY;
+    placeFinger(f);
+  });
+
+  function lift(e) {
+    if (!down.has(e.pointerId)) return;
+    down.delete(e.pointerId);
+    if (phase === 'done') {
+      if (down.size === 0) resetAll();
+      return;
+    }
+    const f = fingers.get(e.pointerId);
+    if (f) { f.el.remove(); fingers.delete(e.pointerId); }
+    if (fingers.size === 0) { resetAll(); return; }
+    restart();
+  }
+  stage.addEventListener('pointerup', lift);
+  stage.addEventListener('pointercancel', lift);
+  stage.addEventListener('contextmenu', e => e.preventDefault());
+
+  // Controls
+  document.getElementById('modes').addEventListener('click', e => {
+    const b = e.target.closest('button');
+    if (!b) return;
+    mode = b.dataset.mode;
+    document.querySelectorAll('#modes button').forEach(x =>
+      x.setAttribute('aria-pressed', String(x === b)));
+    step.classList.toggle('show', mode === 'teams');
+    idleHint();
+  });
+  function setTeams(n) {
+    teamCount = Math.max(2, Math.min(5, n));
+    teamLabel.textContent = teamCount + ' équipes';
+    idleHint();
+  }
+  document.getElementById('minus').addEventListener('click', () => setTeams(teamCount - 1));
+  document.getElementById('plus').addEventListener('click', () => setTeams(teamCount + 1));
+
+  idleHint();
+})();
+</script>
+</body>
+</html>
